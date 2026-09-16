@@ -2,342 +2,633 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Neon Cascade — LaunchTower</title>
 <style>
+  :root {
+    --bg: #0a0e1a;
+    --panel: #131a2e;
+    --accent: #00f0ff;
+    --accent2: #ff00e0;
+    --text: #e8f4ff;
+    --dim: #7a8bb5;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a12; }
-  canvas { display: block; touch-action: none; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 12px;
+  }
+  h1 {
+    font-size: 22px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: var(--accent);
+    text-shadow: 0 0 12px rgba(0,240,255,.7);
+  }
+  #hud {
+    display: flex;
+    gap: 24px;
+    font-size: 14px;
+    color: var(--dim);
+    letter-spacing: 1px;
+  }
+  #hud b { color: var(--text); font-size: 16px; }
+  #wrap {
+    position: relative;
+    line-height: 0;
+  }
+  canvas {
+    background: #05070f;
+    border: 2px solid #1e2a4a;
+    border-radius: 8px;
+    box-shadow: 0 0 30px rgba(0,240,255,.15), inset 0 0 40px rgba(0,0,0,.6);
+    max-width: 92vw;
+    max-height: 70vh;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgba(5,7,15,.82);
+    backdrop-filter: blur(3px);
+    border-radius: 8px;
+    text-align: center;
+    padding: 20px;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h2 {
+    font-size: 28px;
+    letter-spacing: 3px;
+    color: var(--accent2);
+    text-shadow: 0 0 14px rgba(255,0,224,.7);
+  }
+  #overlay p { color: var(--dim); font-size: 14px; line-height: 1.6; max-width: 420px; }
+  #overlay .score { font-size: 20px; color: var(--text); }
+  button {
+    background: transparent;
+    border: 2px solid var(--accent);
+    color: var(--accent);
+    font-size: 15px;
+    letter-spacing: 2px;
+    padding: 10px 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all .15s;
+  }
+  button:hover {
+    background: var(--accent);
+    color: #05070f;
+    box-shadow: 0 0 18px rgba(0,240,255,.8);
+  }
+  #footer { font-size: 11px; color: #3a4a70; letter-spacing: 1px; }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
+  <h1>Neon Cascade</h1>
+  <div id="hud">
+    <div>SCORE <b id="score">0</b></div>
+    <div>CHAIN <b id="chain">x1</b></div>
+    <div>LEVEL <b id="level">1</b></div>
+    <div>BEST <b id="best">0</b></div>
+  </div>
+  <div id="wrap">
+    <canvas id="game" width="480" height="640"></canvas>
+    <div id="overlay">
+      <h2 id="ovTitle">NEON CASCADE</h2>
+      <p id="ovText">Drop glowing orbs into the grid. Match 3+ same-color orbs to cascade them. Cascades multiply your score. Don't let the grid overflow!</p>
+      <div class="score" id="ovScore" style="display:none"></div>
+      <button id="btn">START</button>
+    </div>
+  </div>
+  <div id="footer">LAUNCHTOWER &middot; ARROWS / A D TO MOVE &middot; SPACE OR DOWN TO DROP &middot; P TO PAUSE</div>
+
 <script>
 (() => {
-"use strict";
+  'use strict';
 
-const canvas = document.getElementById("c");
-const ctx = canvas.getContext("2d");
+  // ---------- Config ----------
+  const COLS = 8;
+  const ROWS = 12;
+  const CELL = 40;
+  const COLORS = ['#00f0ff', '#ff00e0', '#ffe600', '#00ff9d', '#ff5e00'];
+  const SPAWN_ROWS = 2; // hidden spawn area above visible grid
+  const TOTAL_ROWS = ROWS + SPAWN_ROWS;
 
-let W = 0, H = 0, dpr = 1;
-function resize() {
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth; H = window.innerHeight;
-  canvas.width = W * dpr; canvas.height = H * dpr;
-  canvas.style.width = W + "px"; canvas.style.height = H + "px";
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-}
-window.addEventListener("resize", resize);
-resize();
+  // ---------- Canvas ----------
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  canvas.width = COLS * CELL;
+  canvas.height = ROWS * CELL;
 
-// ---------- audio ----------
-let audioCtx = null;
-function initAudio() { if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e){} } }
-function beep(freq, dur, type, vol) {
-  if (!audioCtx) return;
-  try {
-    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-    o.type = type || "sine"; o.frequency.value = freq;
-    g.gain.setValueAtTime(vol || 0.08, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
-    o.connect(g); g.connect(audioCtx.destination);
-    o.start(); o.stop(audioCtx.currentTime + dur);
-  } catch(e) {}
-}
+  // ---------- DOM ----------
+  const elScore = document.getElementById('score');
+  const elChain = document.getElementById('chain');
+  const elLevel = document.getElementById('level');
+  const elBest  = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const ovTitle = document.getElementById('ovTitle');
+  const ovText  = document.getElementById('ovText');
+  const ovScore = document.getElementById('ovScore');
+  const btn     = document.getElementById('btn');
 
-// ---------- state ----------
-const STATE = { TITLE: 0, PLAY: 1, OVER: 2 };
-let state = STATE.TITLE;
-let score = 0, best = 0, combo = 0;
-try { best = parseInt(localStorage.getItem("neonCascadeBest") || "0", 10) || 0; } catch(e) {}
-let blocks = [];
-let particles = [];
-let stars = [];
-let shake = 0;
-let time = 0;
-let spawnTimer = 0;
-let speed = 1;
-let flash = 0;
-let flashColor = "#00f0ff";
+  // ---------- State ----------
+  let grid;            // grid[r][c] = colorIndex or -1
+  let current;         // { type: 0..5, rot: 0..3, x (col float), y (row float), vy }
+  let score, chain, level, best;
+  let state;           // 'idle' | 'playing' | 'clearing' | 'gameover' | 'paused'
+  let dropTimer, dropInterval;
+  let clearingTimer;
+  let clearingCells;   // array of {r,c,progress}
+  let particles = [];
+  let time = 0;
 
-// ---------- stars ----------
-function initStars() {
-  stars = [];
-  for (let i = 0; i < 90; i++) {
-    stars.push({ x: Math.random() * W, y: Math.random() * H, r: Math.random() * 1.6 + 0.3, s: Math.random() * 0.4 + 0.1, tw: Math.random() * Math.PI * 2 });
-  }
-}
-initStars();
+  best = parseInt(localStorage.getItem('neonCascadeBest') || '0', 10);
+  elBest.textContent = best;
 
-// ---------- blocks ----------
-const PALETTE = [
-  { fill: "#00f0ff", glow: "rgba(0,240,255,0.55)" },
-  { fill: "#ff2d95", glow: "rgba(255,45,149,0.55)" },
-  { fill: "#a855f7", glow: "rgba(168,85,247,0.55)" },
-  { fill: "#facc15", glow: "rgba(250,204,21,0.55)" },
-  { fill: "#22c55e", glow: "rgba(34,197,94,0.55)" },
-];
+  // ---------- Tetromino-like shapes (orbs) ----------
+  // Each shape: array of [dr, dc] offsets for rot 0; we rotate by swapping.
+  const SHAPES = [
+    [[0,0],[0,1],[1,0],[1,1]],          // square
+    [[0,0],[0,1],[0,2],[0,3]],          // line
+    [[0,0],[0,1],[1,1],[1,2]],          // S
+    [[0,1],[0,2],[1,0],[1,1]],          // Z
+    [[0,0],[0,1],[0,2],[1,1]],          // T
+    [[0,0],[1,0],[2,0],[3,0]],          // vertical line
+  ];
 
-function spawnBlock() {
-  const side = Math.floor(Math.random() * 4); // 0 top, 1 right, 2 bottom, 3 left
-  const size = 26 + Math.random() * 30;
-  let x, y, vx, vy;
-  const sp = (1.6 + Math.random() * 1.6) * speed;
-  if (side === 0) { x = Math.random() * W; y = -size; vx = (Math.random() - 0.5) * 1.2 * speed; vy = sp; }
-  else if (side === 1) { x = W + size; y = Math.random() * H; vx = -sp; vy = (Math.random() - 0.5) * 1.2 * speed; }
-  else if (side === 2) { x = Math.random() * W; y = H + size; vx = (Math.random() - 0.5) * 1.2 * speed; vy = -sp; }
-  else { x = -size; y = Math.random() * H; vx = sp; vy = (Math.random() - 0.5) * 1.2 * speed; }
-  const p = PALETTE[Math.floor(Math.random() * PALETTE.length)];
-  blocks.push({ x, y, vx, vy, size, rot: Math.random() * Math.PI * 2, vr: (Math.random() - 0.5) * 0.04, color: p, dead: false, pop: 0 });
-}
-
-function burst(x, y, color, n) {
-  for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const sp = 1.5 + Math.random() * 4;
-    particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, decay: 0.02 + Math.random() * 0.02, r: 1.5 + Math.random() * 3, color });
-  }
-}
-
-function reset() {
-  blocks = []; particles = []; score = 0; combo = 0; speed = 1; spawnTimer = 0; shake = 0; flash = 0;
-}
-
-function startGame() {
-  initAudio();
-  reset();
-  state = STATE.PLAY;
-  beep(440, 0.12, "sine", 0.06);
-}
-
-function gameOver() {
-  state = STATE.OVER;
-  shake = 14;
-  flash = 1; flashColor = "#ff2d55";
-  beep(110, 0.5, "sawtooth", 0.1);
-  if (score > best) { best = score; try { localStorage.setItem("neonCascadeBest", String(best)); } catch(e) {} }
-}
-
-function popBlock(b) {
-  b.dead = true;
-  const gained = 10 + combo * 2;
-  score += gained;
-  combo++;
-  speed = 1 + Math.min(score / 400, 1.6);
-  burst(b.x, b.y, b.color.fill, 14 + Math.min(combo, 10));
-  flash = Math.max(flash, 0.25); flashColor = b.color.fill;
-  beep(300 + Math.min(combo * 40, 600), 0.08, "triangle", 0.07);
-}
-
-// ---------- input ----------
-function handlePoint(px, py) {
-  if (state === STATE.TITLE) { startGame(); return; }
-  if (state === STATE.OVER) { startGame(); return; }
-  if (state !== STATE.PLAY) return;
-  let hit = null, hitD = 1e9;
-  for (const b of blocks) {
-    if (b.dead) continue;
-    const dx = b.x - px, dy = b.y - py;
-    const d = Math.sqrt(dx * dx + dy * dy);
-    if (d < b.size * 0.75 + 22 && d < hitD) { hitD = d; hit = b; }
-  }
-  if (hit) { popBlock(hit); }
-  else {
-    combo = 0;
-    burst(px, py, "#ffffff", 4);
-    beep(140, 0.06, "square", 0.04);
-  }
-}
-
-canvas.addEventListener("pointerdown", (e) => {
-  e.preventDefault();
-  const r = canvas.getBoundingClientRect();
-  handlePoint(e.clientX - r.left, e.clientY - r.top);
-});
-
-window.addEventListener("keydown", (e) => {
-  if (e.repeat) return;
-  if (state === STATE.TITLE || state === STATE.OVER) {
-    if (e.key === " " || e.key === "Enter") { e.preventDefault(); startGame(); }
-    return;
-  }
-  if (e.key === " ") {
-    e.preventDefault();
-    // pop the nearest block to center
-    let hit = null, hitD = 1e9;
-    for (const b of blocks) {
-      if (b.dead) continue;
-      const d = Math.sqrt((b.x - W / 2) ** 2 + (b.y - H / 2) ** 2);
-      if (d < hitD) { hitD = d; hit = b; }
+  function rotateOffsets(cells, rot) {
+    let out = cells.map(c => [c[0], c[1]]);
+    for (let i = 0; i < rot; i++) {
+      out = out.map(([r, c]) => [c, -r]);
+      // normalize to min 0
+      const minR = Math.min(...out.map(p => p[0]));
+      const minC = Math.min(...out.map(p => p[1]));
+      out = out.map(([r, c]) => [r - minR, c - minC]);
     }
-    if (hit) popBlock(hit); else { combo = 0; beep(140, 0.06, "square", 0.04); }
-  }
-});
-
-// ---------- update ----------
-function update(dt) {
-  time += dt;
-  if (shake > 0) shake = Math.max(0, shake - dt * 40);
-  if (flash > 0) flash = Math.max(0, flash - dt * 2.5);
-
-  for (const s of stars) {
-    s.y += s.s * dt * 60;
-    if (s.y > H) { s.y = 0; s.x = Math.random() * W; }
+    return out;
   }
 
-  if (state === STATE.PLAY) {
-    spawnTimer -= dt;
-    const interval = Math.max(0.28, 0.9 - score / 500);
-    if (spawnTimer <= 0) { spawnBlock(); spawnTimer = interval; }
+  function shapeCells(type, rot) {
+    return rotateOffsets(SHAPES[type % SHAPES.length], rot);
+  }
 
-    for (const b of blocks) {
-      if (b.dead) continue;
-      b.x += b.vx * dt * 60;
-      b.y += b.vy * dt * 60;
-      b.rot += b.vr;
-      const m = b.size;
-      if (b.x < -m * 2 || b.x > W + m * 2 || b.y < -m * 2 || b.y > H + m * 2) {
-        gameOver();
+  function cellsAt(type, rot, x, y) {
+    return shapeCells(type, rot).map(([dr, dc]) => [y + dr, x + dc]);
+  }
+
+  function collides(type, rot, x, y) {
+    for (const [r, c] of cellsAt(type, rot, x, y)) {
+      if (c < 0 || c >= COLS || r >= TOTAL_ROWS) return true;
+      if (r >= 0 && grid[r][c] !== -1) return true;
+    }
+    return false;
+  }
+
+  // ---------- Grid ----------
+  function newGrid() {
+    grid = [];
+    for (let r = 0; r < TOTAL_ROWS; r++) {
+      grid.push(new Array(COLS).fill(-1));
+    }
+  }
+
+  function spawnPiece() {
+    const type = Math.floor(Math.random() * SHAPES.length);
+    const color = Math.floor(Math.random() * COLORS.length);
+    const x = Math.floor((COLS - 2) / 2);
+    const y = -2;
+    current = { type, rot: 0, x, y, color, vy: 0 };
+    if (collides(type, 0, x, y)) {
+      // try shifting
+      let placed = false;
+      for (let dx = -2; dx <= 2 && !placed; dx++) {
+        if (!collides(type, 0, x + dx, y)) { current.x = x + dx; placed = true; }
+      }
+      if (!placed) { gameOver(); return; }
+    }
+  }
+
+  function lockPiece() {
+    for (const [r, c] of cellsAt(current.type, current.rot, current.x, current.y)) {
+      if (r >= 0 && r < TOTAL_ROWS && c >= 0 && c < COLS) {
+        grid[r][c] = current.color;
+      }
+    }
+    // check top-out
+    for (let c = 0; c < COLS; c++) {
+      if (grid[0][c] !== -1) { gameOver(); return; }
+    }
+    const matches = findMatches();
+    if (matches.length > 0) {
+      state = 'clearing';
+      clearingTimer = 0;
+      clearingCells = matches.map(([r, c]) => ({ r, c, progress: 0 }));
+      chain = 1;
+    } else {
+      chain = 1;
+      spawnPiece();
+    }
+    updateHUD();
+  }
+
+  function findMatches() {
+    const matched = new Set();
+    // horizontal
+    for (let r = 0; r < TOTAL_ROWS; r++) {
+      let run = 1;
+      for (let c = 1; c <= COLS; c++) {
+        const same = c < COLS && grid[r][c] !== -1 && grid[r][c] === grid[r][c - 1];
+        if (same) run++;
+        else {
+          if (run >= 3 && grid[r][c - 1] !== -1) {
+            for (let k = c - run; k < c; k++) matched.add(r + ',' + k);
+          }
+          run = 1;
+        }
+      }
+    }
+    // vertical
+    for (let c = 0; c < COLS; c++) {
+      let run = 1;
+      for (let r = 1; r <= TOTAL_ROWS; r++) {
+        const same = r < TOTAL_ROWS && grid[r][c] !== -1 && grid[r][c] === grid[r - 1][c];
+        if (same) run++;
+        else {
+          if (run >= 3 && grid[r - 1][c] !== -1) {
+            for (let k = r - run; k < r; k++) matched.add(k + ',' + c);
+          }
+          run = 1;
+        }
+      }
+    }
+    return [...matched].map(s => { const [r, c] = s.split(',').map(Number); return [r, c]; });
+  }
+
+  function applyGravity() {
+    let moved = false;
+    for (let c = 0; c < COLS; c++) {
+      let write = TOTAL_ROWS - 1;
+      for (let r = TOTAL_ROWS - 1; r >= 0; r--) {
+        if (grid[r][c] !== -1) {
+          if (write !== r) {
+            grid[write][c] = grid[r][c];
+            grid[r][c] = -1;
+            moved = true;
+          }
+          write--;
+        }
+      }
+    }
+    return moved;
+  }
+
+  // ---------- Particles ----------
+  function burst(r, c, colorIdx) {
+    const px = (c + 0.5) * CELL;
+    const py = (r - SPAWN_ROWS + 0.5) * CELL;
+    const col = COLORS[colorIdx];
+    for (let i = 0; i < 10; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 1 + Math.random() * 3;
+      particles.push({
+        x: px, y: py,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 1,
+        life: 1,
+        color: col,
+        size: 2 + Math.random() * 3,
+      });
+    }
+  }
+
+  function updateParticles(dt) {
+    for (const p of particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.12;
+      p.life -= dt * 1.6;
+    }
+    particles = particles.filter(p => p.life > 0);
+  }
+
+  // ---------- Game flow ----------
+  function startGame() {
+    newGrid();
+    score = 0;
+    chain = 1;
+    level = 1;
+    dropInterval = 0.8;
+    dropTimer = 0;
+    particles = [];
+    state = 'playing';
+    spawnPiece();
+    overlay.classList.add('hidden');
+    updateHUD();
+  }
+
+  function gameOver() {
+    state = 'gameover';
+    if (score > best) {
+      best = score;
+      localStorage.setItem('neonCascadeBest', String(best));
+      elBest.textContent = best;
+    }
+    ovTitle.textContent = 'GAME OVER';
+    ovText.textContent = 'The grid overflowed. The cascade ends here.';
+    ovScore.style.display = 'block';
+    ovScore.textContent = 'SCORE ' + score;
+    btn.textContent = 'RETRY';
+    overlay.classList.remove('hidden');
+  }
+
+  function togglePause() {
+    if (state === 'playing') {
+      state = 'paused';
+      ovTitle.textContent = 'PAUSED';
+      ovText.textContent = 'Take a breath. The orbs will wait.';
+      ovScore.style.display = 'none';
+      btn.textContent = 'RESUME';
+      overlay.classList.remove('hidden');
+    } else if (state === 'paused') {
+      state = 'playing';
+      overlay.classList.add('hidden');
+    }
+  }
+
+  function updateHUD() {
+    elScore.textContent = score;
+    elChain.textContent = 'x' + chain;
+    elLevel.textContent = level;
+  }
+
+  // ---------- Input ----------
+  let leftHeld = false, rightHeld = false, downHeld = false;
+
+  function tryMove(dx) {
+    if (state !== 'playing' || !current) return;
+    if (!collides(current.type, current.rot, current.x + dx, current.y)) {
+      current.x += dx;
+    }
+  }
+
+  function tryRotate() {
+    if (state !== 'playing' || !current) return;
+    const nr = (current.rot + 1) % 4;
+    // wall kicks
+    for (const kick of [0, -1, 1, -2, 2]) {
+      if (!collides(current.type, nr, current.x + kick, current.y)) {
+        current.rot = nr;
+        current.x += kick;
         return;
       }
     }
-    blocks = blocks.filter(b => !b.dead);
   }
 
-  for (const p of particles) {
-    p.x += p.vx * dt * 60;
-    p.y += p.vy * dt * 60;
-    p.vx *= 0.97; p.vy *= 0.97;
-    p.life -= p.decay;
+  function hardDrop() {
+    if (state !== 'playing' || !current) return;
+    while (!collides(current.type, current.rot, current.x, current.y + 1)) {
+      current.y++;
+    }
+    lockPiece();
   }
-  particles = particles.filter(p => p.life > 0);
-}
 
-// ---------- draw ----------
-function drawBackground() {
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, "#0a0a18");
-  g.addColorStop(0.5, "#0d0d20");
-  g.addColorStop(1, "#120a1e");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat && (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW')) return;
+    switch (e.code) {
+      case 'ArrowLeft': case 'KeyA': leftHeld = true; tryMove(-1); break;
+      case 'ArrowRight': case 'KeyD': rightHeld = true; tryMove(1); break;
+      case 'ArrowDown': case 'KeyS': downHeld = true; break;
+      case 'ArrowUp': case 'KeyW': case 'KeyX': tryRotate(); break;
+      case 'Space': e.preventDefault(); hardDrop(); break;
+      case 'KeyP': togglePause(); break;
+      case 'Enter':
+        if (state === 'idle' || state === 'gameover') startGame();
+        else if (state === 'paused') togglePause();
+        break;
+    }
+  });
 
-  // subtle grid
-  ctx.strokeStyle = "rgba(120,120,255,0.05)";
-  ctx.lineWidth = 1;
-  const gs = 48;
-  for (let x = 0; x < W; x += gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-  for (let y = 0; y < H; y += gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  window.addEventListener('keyup', (e) => {
+    switch (e.code) {
+      case 'ArrowLeft': case 'KeyA': leftHeld = false; break;
+      case 'ArrowRight': case 'KeyD': rightHeld = false; break;
+      case 'ArrowDown': case 'KeyS': downHeld = false; break;
+    }
+  });
 
-  // stars
-  for (const s of stars) {
-    const a = 0.3 + 0.5 * Math.abs(Math.sin(time * 1.5 + s.tw));
-    ctx.fillStyle = `rgba(200,210,255,${a})`;
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+  btn.addEventListener('click', () => {
+    if (state === 'idle' || state === 'gameover') startGame();
+    else if (state === 'paused') togglePause();
+    btn.blur();
+  });
+
+  // ---------- Update ----------
+  function update(dt) {
+    time += dt;
+    updateParticles(dt);
+
+    if (state === 'clearing') {
+      clearingTimer += dt;
+      const dur = 0.35;
+      for (const cell of clearingCells) {
+        cell.progress = Math.min(1, clearingTimer / dur);
+      }
+      if (clearingTimer >= dur) {
+        // remove cells, award score
+        let count = clearingCells.length;
+        for (const [r, c] of clearingCells) {
+          const col = grid[r][c];
+          if (col !== -1) burst(r, c, col);
+          grid[r][c] = -1;
+        }
+        score += count * 10 * chain;
+        // level up every 150 points
+        const newLevel = Math.floor(score / 150) + 1;
+        if (newLevel > level) {
+          level = newLevel;
+          dropInterval = Math.max(0.15, 0.8 - (level - 1) * 0.06);
+        }
+        chain++;
+        applyGravity();
+        const next = findMatches();
+        if (next.length > 0) {
+          clearingTimer = 0;
+          clearingCells = next.map(([r, c]) => ({ r, c, progress: 0 }));
+        } else {
+          state = 'playing';
+          chain = 1;
+          spawnPiece();
+        }
+        updateHUD();
+      }
+      return;
+    }
+
+    if (state !== 'playing' || !current) return;
+
+    // held movement with repeat
+    if (leftHeld) tryMove(-1);
+    if (rightHeld) tryMove(1);
+
+    dropTimer += dt * (downHeld ? 6 : 1);
+    if (dropTimer >= dropInterval) {
+      dropTimer = 0;
+      if (!collides(current.type, current.rot, current.x, current.y + 1)) {
+        current.y++;
+      } else {
+        lockPiece();
+      }
+    }
   }
-}
 
-function drawBlock(b) {
-  ctx.save();
-  ctx.translate(b.x, b.y);
-  ctx.rotate(b.rot);
-  const s = b.size;
-  ctx.shadowColor = b.color.fill;
-  ctx.shadowBlur = 18;
-  ctx.strokeStyle = b.color.fill;
-  ctx.lineWidth = 2.5;
-  ctx.strokeRect(-s / 2, -s / 2, s, s);
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = b.color.glow;
-  ctx.fillRect(-s / 2 + 3, -s / 2 + 3, s - 6, s - 6);
-  ctx.restore();
-}
-
-function drawParticles() {
-  for (const p of particles) {
-    ctx.globalAlpha = Math.max(0, p.life);
-    ctx.fillStyle = p.color;
-    ctx.shadowColor = p.color;
-    ctx.shadowBlur = 8;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2); ctx.fill();
+  // ---------- Render ----------
+  function drawGrid() {
+    // background cells
+    ctx.strokeStyle = 'rgba(40,60,110,0.35)';
+    ctx.lineWidth = 1;
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        ctx.strokeRect(c * CELL + 1, r * CELL + 1, CELL - 2, CELL - 2);
+      }
+    }
   }
-  ctx.globalAlpha = 1;
-  ctx.shadowBlur = 0;
-}
 
-function drawText(text, x, y, size, color, align, glow) {
-  ctx.font = `700 ${size}px 'Segoe UI', system-ui, sans-serif`;
-  ctx.textAlign = align || "center";
-  ctx.textBaseline = "middle";
-  if (glow) { ctx.shadowColor = glow; ctx.shadowBlur = 20; }
-  ctx.fillStyle = color;
-  ctx.fillText(text, x, y);
-  ctx.shadowBlur = 0;
-}
-
-function drawTitle() {
-  drawText("NEON CASCADE", W / 2, H * 0.32, Math.min(W * 0.09, 56), "#ffffff", "center", "#00f0ff");
-  drawText("pop the blocks before they escape", W / 2, H * 0.42, Math.min(W * 0.035, 18), "rgba(200,210,255,0.8)");
-  const pulse = 0.6 + 0.4 * Math.sin(time * 3);
-  ctx.globalAlpha = pulse;
-  drawText("TAP  /  CLICK  /  SPACE", W / 2, H * 0.56, Math.min(W * 0.04, 22), "#00f0ff", "center", "#00f0ff");
-  ctx.globalAlpha = 1;
-  if (best > 0) drawText("BEST  " + best, W / 2, H * 0.66, Math.min(W * 0.035, 18), "rgba(250,204,21,0.9)");
-  drawText("a LaunchTower game", W / 2, H * 0.88, Math.min(W * 0.025, 13), "rgba(160,170,220,0.5)");
-}
-
-function drawHUD() {
-  drawText(String(score), 24, 30, 26, "#ffffff", "left", "#00f0ff");
-  if (combo > 1) drawText("x" + combo, 24, 58, 16, "#facc15", "left", "#facc15");
-  drawText("BEST " + Math.max(best, score), W - 24, 30, 15, "rgba(200,210,255,0.7)", "right");
-}
-
-function drawOver() {
-  ctx.fillStyle = "rgba(5,5,15,0.55)";
-  ctx.fillRect(0, 0, W, H);
-  drawText("GAME OVER", W / 2, H * 0.34, Math.min(W * 0.08, 48), "#ff2d55", "center", "#ff2d55");
-  drawText("SCORE  " + score, W / 2, H * 0.46, Math.min(W * 0.05, 28), "#ffffff");
-  if (score >= best && score > 0) drawText("NEW BEST!", W / 2, H * 0.54, Math.min(W * 0.035, 18), "#facc15", "center", "#facc15");
-  const pulse = 0.6 + 0.4 * Math.sin(time * 3);
-  ctx.globalAlpha = pulse;
-  drawText("TAP TO RESTART", W / 2, H * 0.66, Math.min(W * 0.04, 20), "#00f0ff", "center", "#00f0ff");
-  ctx.globalAlpha = 1;
-}
-
-function draw() {
-  ctx.save();
-  if (shake > 0) {
-    ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  function drawOrb(x, y, colorIdx, scale = 1, glow = 1) {
+    const px = (x + 0.5) * CELL;
+    const py = (y - SPAWN_ROWS + 0.5) * CELL;
+    const rad = (CELL * 0.38) * scale;
+    const col = COLORS[colorIdx];
+    ctx.save();
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 18 * glow;
+    const g = ctx.createRadialGradient(px - rad * 0.3, py - rad * 0.3, rad * 0.1, px, py, rad);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(0.25, col);
+    g.addColorStop(1, shade(col, -0.55));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(px, py, rad, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
-  drawBackground();
-  if (flash > 0) {
-    ctx.globalAlpha = flash * 0.18;
-    ctx.fillStyle = flashColor;
-    ctx.fillRect(0, 0, W, H);
-    ctx.globalAlpha = 1;
-  }
-  drawParticles();
-  for (const b of blocks) drawBlock(b);
-  if (state === STATE.TITLE) drawTitle();
-  if (state === STATE.PLAY) drawHUD();
-  if (state === STATE.OVER) drawOver();
-  ctx.restore();
-}
 
-// ---------- loop ----------
-let last = performance.now();
-function loop(now) {
-  const dt = Math.min((now - last) / 1000, 0.05);
-  last = now;
-  update(dt);
-  draw();
+  function shade(hex, amt) {
+    const n = parseInt(hex.slice(1), 16);
+    let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    r = Math.max(0, Math.min(255, Math.round(r * (1 + amt))));
+    g = Math.max(0, Math.min(255, Math.round(g * (1 + amt))));
+    b = Math.max(0, Math.min(255, Math.round(b * (1 + amt))));
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+
+  function drawGhost() {
+    if (!current) return;
+    let gy = current.y;
+    while (!collides(current.type, current.rot, current.x, gy + 1)) gy++;
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    for (const [r, c] of cellsAt(current.type, current.rot, current.x, gy)) {
+      if (r < SPAWN_ROWS) continue;
+      drawOrb(c, r, current.color, 0.95, 0.4);
+    }
+    ctx.restore();
+  }
+
+  function drawCurrent() {
+    if (!current) return;
+    for (const [r, c] of cellsAt(current.type, current.rot, current.x, current.y)) {
+      if (r < SPAWN_ROWS) continue;
+      drawOrb(c, r, current.color, 1, 1);
+    }
+  }
+
+  function drawLocked() {
+    for (let r = 0; r < TOTAL_ROWS; r++) {
+      if (r < SPAWN_ROWS) continue;
+      for (let c = 0; c < COLS; c++) {
+        if (grid[r][c] !== -1) drawOrb(c, r, grid[r][c], 1, 0.8);
+      }
+    }
+  }
+
+  function drawClearing() {
+    for (const cell of clearingCells) {
+      const s = 1 + cell.progress * 0.6;
+      ctx.save();
+      ctx.globalAlpha = 1 - cell.progress * 0.7;
+      drawOrb(cell.c, cell.r, grid[cell.r][cell.c], s, 1.5);
+      ctx.restore();
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawScanlines() {
+    ctx.save();
+    ctx.globalAlpha = 0.05;
+    ctx.fillStyle = '#000';
+    for (let y = 0; y < canvas.height; y += 4) {
+      ctx.fillRect(0, y, canvas.width, 2);
+    }
+    ctx.restore();
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawGrid();
+    drawLocked();
+    if (state === 'playing' || state === 'paused') {
+      drawGhost();
+      drawCurrent();
+    }
+    if (state === 'clearing') drawClearing();
+    drawParticles();
+    drawScanlines();
+  }
+
+  // ---------- Loop ----------
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
   requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);
 
+  // initial state
+  state = 'idle';
+  newGrid();
 })();
 </script>
-
-<div style="text-align:center;padding:14px 16px;font-size:13px;color:#8b93a7;background:#0b0e14;border-top:1px solid #232c3f;">More free tools &amp; games: <a href="https://pennypenguinapp-beep.github.io/" style="color:#5eead4;">LaunchTower</a></div>
 </body>
 </html>
